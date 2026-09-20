@@ -227,17 +227,60 @@ export function decodeRealtimePlaybackEvent(
   };
 }
 
-function extractChatText(value: unknown): string | null {
-  const direct = readString(value);
-  if (!direct) return null;
-  const parsed = parseJsonString(direct);
-  if (typeof parsed === "string") return direct;
+function extractChatText(value: unknown, depth = 0): string | null {
+  if (depth > 6 || value === null || value === undefined) return null;
+
+  const parsed = parseJsonString(value);
+
+  if (typeof parsed === "string") {
+    const text = parsed.trim();
+    return text || null;
+  }
+
+  if (Array.isArray(parsed)) {
+    for (const item of parsed) {
+      const found = extractChatText(item, depth + 1);
+      if (found) return found;
+    }
+    return null;
+  }
+
   const object = asRecord(parsed);
-  return readString(object.text)
-    ?? readString(object.content)
-    ?? readString(object.body)
-    ?? readString(object.msg);
+  if (!Object.keys(object).length) return null;
+
+  for (const key of [
+    "text",
+    "content",
+    "body",
+    "msg",
+    "message",
+    "data",
+    "payload",
+    "attach",
+    "msg_attach_",
+    "msg_body_",
+    "ext",
+    "ext_",
+    "clientExt",
+  ]) {
+    if (object[key] === undefined) continue;
+
+    const found = extractChatText(object[key], depth + 1);
+    if (found) return found;
+  }
+
+  return null;
 }
+  
+  
+  
+  
+  
+  
+    
+    
+    
+
 
 function chatMessageCategory(msgType: number | null): RealtimeChatRoomMessage["category"] {
   if (msgType === 0) return "text";
