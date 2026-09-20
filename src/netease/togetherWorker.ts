@@ -124,7 +124,7 @@ export class TogetherWorker {
       } else if (remote.chatRoomId && remote.chatRoomId !== this.chatRoomId) {
         this.chatRoomId = remote.chatRoomId;
       }
-      if (remote.chatRoomId) await this.ensureRealtime(remote.roomId, remote.chatRoomId);
+      if (remote.chatRoomId) void this.ensureRealtime(remote.roomId, remote.chatRoomId);
     } else if (this.roomId) {
       this.leaveRoom("一起听已经结束了。我会继续等你的下一次邀请。");
     }
@@ -327,7 +327,10 @@ export class TogetherWorker {
   }
 
   private handleRealtimeChatMessage(message: RealtimeChatRoomMessage): void {
-    if (message.category !== "text" || !message.text) return;
+    if (
+  (message.category !== "text" && message.category !== "custom")
+  || !message.text
+) return;
     const ownAccountId = this.status.accountId;
     if (ownAccountId && message.senderId === ownAccountId) return;
 
