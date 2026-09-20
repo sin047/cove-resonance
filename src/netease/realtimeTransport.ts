@@ -541,19 +541,49 @@ export class NeteaseRealtimeTransport {
 
     const client = this.nimClient;
     if (!client) throw new Error("NIM client is unavailable");
-    const [loginResult] = await client.login(
+    let loginTimeout: ReturnType<typeof setTimeout> | null = null;
+
+try {
+  const [loginResult] = await Promise.race([
+    client.login(
       NIM_APP_KEY,
       credentials.accId,
       credentials.token,
       null,
       "",
+    ),
+    new Promise<never>((_, reject) => {
+      loginTimeout = setTimeout(() => {
+        reject(new Error("NIM login timed out"));
+      }, 15_000);
+      loginTimeout.unref?.();
+    }),
+  ]);
+
+  const loginCode = readNumber(asRecord(loginResult).res_code_);
+  if (loginCode !== 200) {
+    throw new Error(
+      `NIM login failed${loginCode === null ? "" : ` code=${loginCode}`}`,
     );
-    const loginCode = readNumber(asRecord(loginResult).res_code_);
-    if (loginCode !== 200) {
-      throw new Error(`NIM login failed${loginCode === null ? "" : ` code=${loginCode}`}`);
-    }
-    this.loggedInAccount = credentials.accId;
-    this.markImOnline();
+  }
+
+  this.loggedInAccount = credentials.accId;
+  this.markImOnline();
+} finally {
+  if (loginTimeout) clearTimeout(loginTimeout);
+}
+    
+      
+      
+      
+      
+    
+    
+    
+      
+    
+    
+    
   }
 
   private installRuntimeHandlers(chatroom: ChatRoomLike, client: NimClientLike): void {
