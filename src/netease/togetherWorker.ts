@@ -165,8 +165,12 @@ export class TogetherWorker {
     try {
       const credentials = await this.client.getRealtimeCredentials();
       console.log(
-        `NetEase NIM realtime credentials acquired for account ${this.status.accountId ?? "unknown"}; addresses=${credentials.addresses.length}`,
-      );
+  `NetEase NIM realtime credentials acquired for account ${this.status.accountId ?? "unknown"}; addresses=${JSON.stringify(
+    credentials.addresses.map((value) => value.split("?")[0]),
+  )}`,
+);
+        
+      
       if (!this.accountProfile) {
         this.accountProfile = await this.client.getAccountProfile();
         this.status.accountId = this.accountProfile.id;
