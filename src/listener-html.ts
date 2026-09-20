@@ -267,12 +267,13 @@ export function buildListenerHtml(): string {
       const event = result && result._meta && result._meta.event;
       if (!event) {
         const state = result && result.structuredContent;
-        if (state && state.awaitingReply) {
+    
+      if (state && state.awaitingReply) {
   setStatus('等待当前消息完成回传…');
   window.setTimeout(() => void syncOnce(), 2000);
 } else {
   setIdleStatus();
-}
+}  
         return;
       }
 
