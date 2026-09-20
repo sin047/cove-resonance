@@ -31,6 +31,7 @@ export function buildListenerHtml(): string {
   let timer = 0;
   let listening = false;
   let inFlight = false;
+  let syncQueued = false;
   let bridgeReady = false;
   let streamAbort = null;
   let streamGeneration = 0;
@@ -243,8 +244,17 @@ export function buildListenerHtml(): string {
   }
 
   async function syncOnce() {
-    if (!listening || inFlight) return;
-    inFlight = true;
+  if (!listening) return;
+
+  if (inFlight) {
+    syncQueued = true;
+    return;
+  }
+
+  inFlight = true;
+  syncQueued = false;
+    
+    
     let shouldContinue = false;
     try {
       const acksFlushed = await flushPendingAcks();
@@ -261,6 +271,7 @@ export function buildListenerHtml(): string {
           setStatus('等待当前消息完成回传…');
         } else {
           setIdleStatus();
+          window.setTimeout(() => void syncOnce(), 2000);
         }
         return;
       }
@@ -302,11 +313,13 @@ export function buildListenerHtml(): string {
     } catch (error) {
       setStatus('监听错误：' + (error && error.message ? error.message : String(error)));
     } finally {
-      inFlight = false;
-      if (listening && shouldContinue) {
-        window.setTimeout(() => void syncOnce(), 0);
-      }
-    }
+  inFlight = false;
+
+  if (listening && (shouldContinue || syncQueued)) {
+    syncQueued = false;
+    window.setTimeout(() => void syncOnce(), 0);
+  }
+}
   }
 
   function scheduleFallback() {
