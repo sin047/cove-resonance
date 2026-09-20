@@ -21,21 +21,25 @@ export function buildListenerHtml(): string {
 <main class="card">
   <div class="title">Cove Bridge</div>
   <div id="status" class="status">已挂载，尚未监听。</div>
+  <div id="meta" class="status">监听时长：— · NIM：待检测</div>
   <button id="toggle" type="button" disabled>正在连接…</button>
 </main>
 <script>
 (() => {
   const FALLBACK_POLL_MS = ${FALLBACK_POLL_MS};
   const pending = new Map();
-  let rpcId = 0;
   let timer = 0;
-  let listening = false;
-  let inFlight = false;
-  let syncQueued = false;
-  let bridgeReady = false;
-  let streamAbort = null;
-  let streamGeneration = 0;
-  let sseConnected = false;
+let listening = false;
+let inFlight = false;
+let syncQueued = false;
+let bridgeReady = false;
+let streamAbort = null;
+let streamGeneration = 0;
+let sseConnected = false;
+let listeningStartedAt = 0;
+let metaTimer = 0;
+let nimState = '待检测';
+let nimCheckInFlight = false;
   const DISPATCHED_STORAGE_KEY = 'cove-bridge-dispatched-v1';
   const PENDING_ACK_STORAGE_KEY = 'cove-bridge-pending-acks-v1';
   const MAX_RECENT_DISPATCHED = 128;
@@ -43,8 +47,9 @@ export function buildListenerHtml(): string {
   const pendingAcks = new Set();
 
   const statusEl = document.getElementById('status');
-  const toggleEl = document.getElementById('toggle');
-  const setStatus = (text) => { statusEl.textContent = text; };
+const metaEl = document.getElementById('meta');
+const toggleEl = document.getElementById('toggle');
+const setStatus = (text) => { statusEl.textContent = text; };
 
   function readStoredIds(key) {
     try {
@@ -158,6 +163,73 @@ export function buildListenerHtml(): string {
       ? 'SSE 实时监听中，暂无新事件。'
       : '监听中（SSE 重连中，60 秒轮询兜底）。');
   }
+  function formatListeningDuration() {
+  if (!listening || !listeningStartedAt) return '—';
+
+  const totalMinutes = Math.floor(
+    (Date.now() - listeningStartedAt) / 60_000
+  );
+
+  if (totalMinutes < 60) {
+    return totalMinutes + ' 分钟';
+  }
+
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  return hours + ' 小时 ' + minutes + ' 分钟';
+}
+
+function renderMetaStatus() {
+  metaEl.textContent =
+    '监听时长：' + formatListeningDuration()
+    + ' · NIM：' + nimState;
+}
+
+async function refreshNimStatus() {
+  if (!listening || nimCheckInFlight) return;
+
+  nimCheckInFlight = true;
+
+  try {
+    const result = await callTool(
+      'netease_together_realtime_status',
+      {}
+    );
+    const state = result && result.structuredContent;
+
+    nimState =
+      state && state.connected
+        ? '在线'
+        : '离线';
+  } catch {
+    nimState = '检测失败';
+  } finally {
+    nimCheckInFlight = false;
+    renderMetaStatus();
+  }
+}
+
+function startMetaStatus() {
+  listeningStartedAt = Date.now();
+  nimState = '待检测';
+
+  window.clearInterval(metaTimer);
+  renderMetaStatus();
+  void refreshNimStatus();
+
+  metaTimer = window.setInterval(() => {
+    renderMetaStatus();
+    void refreshNimStatus();
+  }, 10_000);
+}
+
+function stopMetaStatus() {
+  window.clearInterval(metaTimer);
+  metaTimer = 0;
+  listeningStartedAt = 0;
+  nimState = '待检测';
+  renderMetaStatus();
+}
 
   async function openWakeStream(generation) {
     let retryMs = 1000;
@@ -330,26 +402,28 @@ export function buildListenerHtml(): string {
   }
 
   function startListening() {
-    listening = true;
-    toggleEl.textContent = '停止监听';
-    setStatus('正在建立 SSE 实时监听…');
-    scheduleFallback();
-    streamGeneration += 1;
-    const generation = streamGeneration;
-    void openWakeStream(generation);
-    void syncOnce();
-  }
+  listening = true;
+  startMetaStatus();
+  toggleEl.textContent = '停止监听';
+  setStatus('正在建立 SSE 实时监听…');
+  scheduleFallback();
+  streamGeneration += 1;
+  const generation = streamGeneration;
+  void openWakeStream(generation);
+  void syncOnce();
+}
 
-  function stopListening() {
-    listening = false;
-    toggleEl.textContent = '开始监听';
-    window.clearInterval(timer);
-    streamGeneration += 1;
-    sseConnected = false;
-    if (streamAbort) streamAbort.abort();
-    streamAbort = null;
-    setStatus('已暂停。');
-  }
+ function stopListening() {
+  listening = false;
+  stopMetaStatus();
+  toggleEl.textContent = '开始监听';
+  window.clearInterval(timer);
+  streamGeneration += 1;
+  sseConnected = false;
+  if (streamAbort) streamAbort.abort();
+  streamAbort = null;
+  setStatus('已暂停。');
+} 
 
   toggleEl.addEventListener('click', () => {
     if (listening) stopListening();
