@@ -75,6 +75,7 @@ type EventHandler = (...args: unknown[]) => void;
 type ChatRoomLike = {
   init(appInstallDir: string, extension: string): boolean;
   initEventHandlers(): void;
+  cleanup(): void;
   enter(roomId: number, requestLoginData: string, info: Record<string, unknown>, extension: string): boolean;
   exit(roomId: number, extension: string): void;
   sendMsg(roomId: number, msg: Record<string, unknown>, extension: string): boolean;
@@ -98,6 +99,7 @@ type ChatRoomLike = {
 type NimClientLike = {
   init(appKey: string, appDataDir: string, appInstallDir: string, config: Record<string, unknown>): boolean;
   initEventHandlers(): void;
+  cleanup(extension: string): void;
   login(appKey: string, account: string, password: string, cb: null, extension: string): Promise<[unknown]>;
   on?(event: string, handler: EventHandler): unknown;
 };
@@ -491,7 +493,31 @@ export class NeteaseRealtimeTransport {
       this.imReadyWaiters.add(waiter);
     });
   }
+ private resetRuntimeAfterLoginFailure(): void {
+  const chatroom = this.chatroom;
+  const client = this.nimClient;
 
+  this.runtimeReady = false;
+  this.loggedInAccount = null;
+  this.markImOffline();
+
+  this.nimClient = null;
+  this.nimPlugin = null;
+  this.chatroom = null;
+  this.roomNumber = null;
+  this.activeMemberProfile = null;
+  this.pendingEnter = null;
+
+  try {
+    chatroom?.cleanup();
+  } catch {}
+
+  try {
+    client?.cleanup("");
+  } catch {}
+
+  console.warn("NetEase NIM native runtime reset after login failure");
+}
   private async ensureRuntime(credentials: RealtimeCredentials): Promise<void> {
     if (!this.runtimeReady) {
       const dataDir = join(tmpdir(), `cove-nim-${process.pid}`);
@@ -568,7 +594,10 @@ try {
   }
 
   this.loggedInAccount = credentials.accId;
-  this.markImOnline();
+this.markImOnline();
+} catch (error) {
+  this.resetRuntimeAfterLoginFailure();
+  throw error;
 } finally {
   if (loginTimeout) clearTimeout(loginTimeout);
 }
