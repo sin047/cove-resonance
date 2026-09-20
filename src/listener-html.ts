@@ -26,9 +26,10 @@ export function buildListenerHtml(): string {
 </main>
 <script>
 (() => {
-  const FALLBACK_POLL_MS = ${FALLBACK_POLL_MS};
-  const pending = new Map();
-  let timer = 0;
+const FALLBACK_POLL_MS = ${FALLBACK_POLL_MS};
+const pending = new Map();
+let rpcId = 0;
+let timer = 0;
 let listening = false;
 let inFlight = false;
 let syncQueued = false;
