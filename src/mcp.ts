@@ -406,6 +406,11 @@ export function createMcpServer(
         hasEvent: z.boolean(),
         eventId: z.string().optional(),
         awaitingReply: z.boolean().optional(),
+        outstandingStatus: z.enum(["reserved", "delivered"]).optional(),
+        reservedAt: z.string().optional(),
+        deliveredAt: z.string().nullable().optional(),
+        awaitingReplyForMs: z.number().optional(),
+        queuedConversation: z.number().optional(),
       },
       annotations: {
         readOnlyHint: false,
@@ -416,13 +421,19 @@ export function createMcpServer(
       _meta: { ui: { visibility: ["app"] } },
     },
     async () => {
-      const outstanding = queue.getOutstandingRequiredReplyEvent();
+      const outstanding = queue.getOutstandingRequiredReplyState();
       if (outstanding) {
+        const queueState = queue.status();
         return {
           structuredContent: {
             hasEvent: false,
-            eventId: outstanding.id,
+            eventId: outstanding.event.id,
             awaitingReply: true,
+            outstandingStatus: outstanding.status,
+            reservedAt: outstanding.reservedAt,
+            deliveredAt: outstanding.deliveredAt,
+            awaitingReplyForMs: outstanding.awaitingReplyForMs,
+            queuedConversation: queueState.conversation.pending,
           },
           content: [],
         };
@@ -437,6 +448,69 @@ export function createMcpServer(
         structuredContent: { hasEvent: true, eventId: event.id, awaitingReply: false },
         content: [],
         _meta: { event },
+      };
+    },
+  );
+
+  server.registerTool(
+    "cove_bridge_replay_outstanding",
+    {
+      title: "Replay outstanding Cove Bridge event",
+      description: "Return the current required event to the Listener for an explicit user-requested follow-up retry. App-only.",
+      inputSchema: { eventId: z.string().min(1) },
+      outputSchema: { replayed: z.boolean(), eventId: z.string() },
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        openWorldHint: false,
+        idempotentHint: false,
+      },
+      _meta: { ui: { visibility: ["app"] } },
+    },
+    async ({ eventId }) => {
+      const outstanding = queue.getOutstandingRequiredReplyState();
+      if (!outstanding) throw new Error("No required Cove Bridge event is awaiting a reply.");
+      if (outstanding.event.id !== eventId) {
+        throw new Error(
+          `Outstanding event changed: requested=${eventId} current=${outstanding.event.id}`,
+        );
+      }
+
+      console.warn(
+        `Cove Bridge outstanding replay requested: eventId=${eventId} awaitingReplyForMs=${outstanding.awaitingReplyForMs}`,
+      );
+      return {
+        structuredContent: { replayed: true, eventId },
+        content: [],
+        _meta: { event: outstanding.event },
+      };
+    },
+  );
+
+  server.registerTool(
+    "cove_bridge_cancel_outstanding",
+    {
+      title: "Cancel outstanding Cove Bridge event",
+      description: "Cancel the current required event after explicit user confirmation so later queued events can continue. App-only.",
+      inputSchema: { eventId: z.string().min(1) },
+      outputSchema: { cancelled: z.boolean(), eventId: z.string() },
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: true,
+        openWorldHint: false,
+        idempotentHint: true,
+      },
+      _meta: { ui: { visibility: ["app"] } },
+    },
+    async ({ eventId }) => {
+      const cancelled = queue.cancelOutstandingRequiredReply(eventId);
+      if (cancelled) {
+        console.warn(`Cove Bridge outstanding event cancelled: eventId=${eventId}`);
+        listenerWakeHub.wake("outstanding-cancelled");
+      }
+      return {
+        structuredContent: { cancelled, eventId },
+        content: [],
       };
     },
   );

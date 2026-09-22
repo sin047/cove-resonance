@@ -1,4 +1,5 @@
 const FALLBACK_POLL_MS = 60_000;
+const RECOVERY_GRACE_MS = 60_000;
 
 export function buildListenerHtml(): string {
   return `<!doctype html>
@@ -15,6 +16,8 @@ export function buildListenerHtml(): string {
   .title{font-weight:650}.status{margin-top:9px;font-size:12px;opacity:.72}
   button{margin-top:12px;padding:8px 12px;border-radius:10px;border:1px solid color-mix(in srgb,CanvasText 18%,transparent);background:Canvas;color:CanvasText;font:inherit;cursor:pointer}
   button:disabled{opacity:.55;cursor:default}
+  .recovery{margin-top:12px;padding:10px;border:1px solid color-mix(in srgb,CanvasText 14%,transparent);border-radius:10px}
+  .recovery[hidden]{display:none}.recovery-actions{display:flex;gap:8px;flex-wrap:wrap}.recovery-actions button{margin-top:8px}
 </style>
 </head>
 <body>
@@ -22,11 +25,19 @@ export function buildListenerHtml(): string {
   <div class="title">Cove Bridge</div>
   <div id="status" class="status">已挂载，尚未监听。</div>
   <div id="meta" class="status">监听时长：— · NIM：待检测</div>
+  <section id="recovery" class="recovery" hidden>
+    <div id="recoveryText" class="status"></div>
+    <div class="recovery-actions">
+      <button id="replay" type="button" disabled>重新触发</button>
+      <button id="cancel" type="button" disabled>取消此条</button>
+    </div>
+  </section>
   <button id="toggle" type="button" disabled>正在连接…</button>
 </main>
 <script>
 (() => {
 const FALLBACK_POLL_MS = ${FALLBACK_POLL_MS};
+const RECOVERY_GRACE_MS = ${RECOVERY_GRACE_MS};
 const pending = new Map();
 let rpcId = 0;
 let timer = 0;
@@ -41,6 +52,8 @@ let listeningStartedAt = 0;
 let metaTimer = 0;
 let nimState = '待检测';
 let nimCheckInFlight = false;
+let activeOutstandingId = '';
+let recoveryBusy = false;
   const DISPATCHED_STORAGE_KEY = 'cove-bridge-dispatched-v1';
   const PENDING_ACK_STORAGE_KEY = 'cove-bridge-pending-acks-v1';
   const MAX_RECENT_DISPATCHED = 128;
@@ -49,8 +62,35 @@ let nimCheckInFlight = false;
 
   const statusEl = document.getElementById('status');
 const metaEl = document.getElementById('meta');
+const recoveryEl = document.getElementById('recovery');
+const recoveryTextEl = document.getElementById('recoveryText');
+const replayEl = document.getElementById('replay');
+const cancelEl = document.getElementById('cancel');
 const toggleEl = document.getElementById('toggle');
 const setStatus = (text) => { statusEl.textContent = text; };
+
+function hideRecovery() {
+  activeOutstandingId = '';
+  recoveryEl.hidden = true;
+  replayEl.disabled = true;
+  cancelEl.disabled = true;
+}
+
+function renderRecovery(state) {
+  const eventId = String(state.eventId || '');
+  const waitingMs = Math.max(0, Number(state.awaitingReplyForMs) || 0);
+  const waitingSeconds = Math.floor(waitingMs / 1000);
+  const queuedConversation = Math.max(0, Number(state.queuedConversation) || 0);
+  const queuedSuffix = queuedConversation > 0 ? ' · 后续待处理 ' + queuedConversation + ' 条' : '';
+  const canRecover = waitingMs >= RECOVERY_GRACE_MS && !recoveryBusy;
+  activeOutstandingId = eventId;
+  recoveryEl.hidden = false;
+  recoveryTextEl.textContent = canRecover
+    ? '事件 ' + eventId.slice(0, 8) + '… 已等待 ' + waitingSeconds + ' 秒' + queuedSuffix + '，可以重新触发或取消。'
+    : '事件 ' + eventId.slice(0, 8) + '… 已等待 ' + waitingSeconds + ' 秒' + queuedSuffix + '；60 秒后开放恢复操作。';
+  replayEl.disabled = !canRecover;
+  cancelEl.disabled = !canRecover;
+}
 
   function readStoredIds(key) {
     try {
@@ -289,7 +329,7 @@ function stopMetaStatus() {
     }
   }
 
-  async function dispatch(event) {
+  async function dispatch(event, preferCompatibility) {
     await request('ui/update-model-context', {
       content: [{
         type: 'text',
@@ -310,6 +350,17 @@ function stopMetaStatus() {
         }
       }
     });
+    if (
+      preferCompatibility
+      && window.openai
+      && typeof window.openai.sendFollowUpMessage === 'function'
+    ) {
+      await window.openai.sendFollowUpMessage({
+        prompt: String(event.visibleText || ''),
+        scrollToBottom: true
+      });
+      return;
+    }
     await request('ui/message', {
       role: 'user',
       content: [{ type: 'text', text: String(event.visibleText || '') }]
@@ -342,14 +393,20 @@ function stopMetaStatus() {
         const state = result && result.structuredContent;
     
       if (state && state.awaitingReply) {
-  setStatus('等待当前消息完成回传…');
+  renderRecovery(state);
+  const waitingSeconds = Math.floor((Number(state.awaitingReplyForMs) || 0) / 1000);
+  setStatus(waitingSeconds >= 60
+    ? '当前消息等待回传已超过 60 秒，可使用恢复操作。'
+    : '等待当前消息完成回传…' + waitingSeconds + ' 秒');
   window.setTimeout(() => void syncOnce(), 2000);
 } else {
+  hideRecovery();
   setIdleStatus();
 }  
         return;
       }
 
+      hideRecovery();
       const eventId = String(event.id);
       if (recentlyDispatched.has(eventId)) {
         rememberPendingAck(eventId);
@@ -396,6 +453,53 @@ function stopMetaStatus() {
 }
   }
 
+  async function replayOutstanding() {
+    const eventId = activeOutstandingId;
+    if (!eventId || recoveryBusy) return;
+    recoveryBusy = true;
+    replayEl.disabled = true;
+    cancelEl.disabled = true;
+    setStatus('正在重新触发悬挂消息…');
+    try {
+      const result = await callTool('cove_bridge_replay_outstanding', { eventId });
+      const event = result && result._meta && result._meta.event;
+      if (!event) throw new Error('Bridge did not return the outstanding event');
+      await dispatch(event, true);
+      rememberDispatched(eventId);
+      await callTool('cove_bridge_delivered', { eventId });
+      forgetPendingAck(eventId);
+      setStatus('已重新触发，等待本轮回传…');
+    } catch (error) {
+      setStatus('重新触发失败：' + (error && error.message ? error.message : String(error)));
+    } finally {
+      recoveryBusy = false;
+      window.setTimeout(() => void syncOnce(), 2000);
+    }
+  }
+
+  async function cancelOutstanding() {
+    const eventId = activeOutstandingId;
+    if (!eventId || recoveryBusy) return;
+    if (!window.confirm('确认取消这条悬挂消息并继续处理后续消息？')) return;
+    recoveryBusy = true;
+    replayEl.disabled = true;
+    cancelEl.disabled = true;
+    setStatus('正在取消悬挂消息…');
+    try {
+      const result = await callTool('cove_bridge_cancel_outstanding', { eventId });
+      const state = result && result.structuredContent;
+      if (!state || !state.cancelled) throw new Error('Outstanding event was not cancelled');
+      forgetPendingAck(eventId);
+      hideRecovery();
+      setStatus('悬挂消息已取消，继续处理后续队列。');
+      window.setTimeout(() => void syncOnce(), 0);
+    } catch (error) {
+      setStatus('取消失败：' + (error && error.message ? error.message : String(error)));
+    } finally {
+      recoveryBusy = false;
+    }
+  }
+
   function scheduleFallback() {
     window.clearInterval(timer);
     if (!listening) return;
@@ -417,6 +521,7 @@ function stopMetaStatus() {
  function stopListening() {
   listening = false;
   stopMetaStatus();
+  hideRecovery();
   toggleEl.textContent = '开始监听';
   window.clearInterval(timer);
   streamGeneration += 1;
@@ -430,6 +535,8 @@ function stopMetaStatus() {
     if (listening) stopListening();
     else startListening();
   });
+  replayEl.addEventListener('click', () => void replayOutstanding());
+  cancelEl.addEventListener('click', () => void cancelOutstanding());
 
   initialize().catch((error) => {
     toggleEl.disabled = true;
