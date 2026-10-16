@@ -285,7 +285,7 @@ export class NeteaseClient {
     return {
       inRoom,
       roomId: readString(roomInfo.roomId) ?? readString(data.roomId),
-      chatRoomId: readString(roomInfo.chatRoomId) ?? null,
+      chatRoomId: readString(roomInfo.chatRoomId) ?? readString(data.chatRoomId),
     };
   }
 
