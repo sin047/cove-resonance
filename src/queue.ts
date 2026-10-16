@@ -17,6 +17,19 @@ export type QueueStatus = StreamCounts & {
   state: StreamCounts;
 };
 
+export type OutstandingRequiredReplyState = {
+  event: BridgeEvent;
+  status: "reserved" | "delivered";
+  reservedAt: string;
+  deliveredAt: string | null;
+  awaitingReplyForMs: number;
+};
+
+type EventLifecycle = {
+  reservedAtMs: number;
+  deliveredAtMs?: number;
+};
+
 const STATE_HISTORY_PER_KEY = 12;
 
 function emptyCounts(): StreamCounts {
@@ -27,6 +40,7 @@ export class InMemoryEventQueue {
   private readonly conversationRows = new Map<string, StoredBridgeEvent>();
   private readonly stateRows = new Map<string, StoredBridgeEvent>();
   private readonly statePendingByKey = new Map<string, string>();
+  private readonly lifecycleByEventId = new Map<string, EventLifecycle>();
 
   enqueue(event: BridgeEvent): boolean {
     if (this.getRow(event.id)) return false;
@@ -55,11 +69,38 @@ export class InMemoryEventQueue {
   }
 
   getOutstandingRequiredReplyEvent(filter?: (event: BridgeEvent) => boolean): BridgeEvent | null {
+    return this.getOutstandingRequiredReplyState(filter)?.event ?? null;
+  }
+
+  getOutstandingRequiredReplyState(
+    filter?: (event: BridgeEvent) => boolean,
+    nowMs = Date.now(),
+  ): OutstandingRequiredReplyState | null {
     for (const row of this.conversationRows.values()) {
       if (filter && !filter(row.event)) continue;
       if (row.event.replyPolicy !== "required") continue;
       if (row.reply?.completed) continue;
-      if (row.status === "reserved" || row.status === "delivered") return row.event;
+      if (row.status !== "reserved" && row.status !== "delivered") continue;
+
+      let lifecycle = this.lifecycleByEventId.get(row.event.id);
+      if (!lifecycle) {
+        const createdAtMs = Date.parse(row.event.createdAt);
+        lifecycle = {
+          reservedAtMs: Number.isFinite(createdAtMs) ? createdAtMs : nowMs,
+        };
+        if (row.status === "delivered") lifecycle.deliveredAtMs = nowMs;
+        this.lifecycleByEventId.set(row.event.id, lifecycle);
+      }
+
+      return {
+        event: row.event,
+        status: row.status,
+        reservedAt: new Date(lifecycle.reservedAtMs).toISOString(),
+        deliveredAt: lifecycle.deliveredAtMs === undefined
+          ? null
+          : new Date(lifecycle.deliveredAtMs).toISOString(),
+        awaitingReplyForMs: Math.max(0, nowMs - lifecycle.reservedAtMs),
+      };
     }
     return null;
   }
@@ -71,6 +112,7 @@ export class InMemoryEventQueue {
       if (row.status !== "pending") continue;
       if (filter && !filter(row.event)) continue;
       row.status = "reserved";
+      this.lifecycleByEventId.set(row.event.id, { reservedAtMs: Date.now() });
       return row.event;
     }
 
@@ -82,6 +124,7 @@ export class InMemoryEventQueue {
       }
       if (filter && !filter(row.event)) continue;
       row.status = "reserved";
+      this.lifecycleByEventId.set(row.event.id, { reservedAtMs: Date.now() });
       this.statePendingByKey.delete(key);
       return row.event;
     }
@@ -97,11 +140,16 @@ export class InMemoryEventQueue {
       throw new Error(`Event is not reserved: ${eventId}`);
     }
     row.status = "delivered";
+    const lifecycle = this.lifecycleByEventId.get(eventId) ?? { reservedAtMs: Date.now() };
+    lifecycle.deliveredAtMs = Date.now();
+    this.lifecycleByEventId.set(eventId, lifecycle);
   }
 
   release(eventId: string): void {
     const row = this.getRow(eventId);
     if (!row || row.status === "delivered") return;
+
+    this.lifecycleByEventId.delete(eventId);
 
     if (row.event.stream === "state") {
       const key = row.event.stateKey ?? row.event.source;
@@ -127,6 +175,9 @@ export class InMemoryEventQueue {
     }
 
     row.status = "delivered";
+    const lifecycle = this.lifecycleByEventId.get(eventId) ?? { reservedAtMs: Date.now() };
+    lifecycle.deliveredAtMs ??= Date.now();
+    this.lifecycleByEventId.set(eventId, lifecycle);
 
     if (row.event.replyPolicy !== "required") return;
 
@@ -232,7 +283,9 @@ export class InMemoryEventQueue {
     }
     const overflow = deliveredIds.length - STATE_HISTORY_PER_KEY;
     for (let index = 0; index < overflow; index += 1) {
-      this.stateRows.delete(deliveredIds[index]);
+      const eventId = deliveredIds[index];
+      this.stateRows.delete(eventId);
+      this.lifecycleByEventId.delete(eventId);
     }
   }
 }
