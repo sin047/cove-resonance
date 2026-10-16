@@ -76,6 +76,8 @@ test("legacy and scoped endpoints both keep the Music V2 tool surface", async ()
     "cove_bridge_listener_session",
     "cove_bridge_reply",
     "cove_bridge_sync",
+    "cove_bridge_replay_outstanding",
+    "cove_bridge_cancel_outstanding",
     "cove_bridge_delivered",
     "cove_bridge_dismissed",
     "cove_bridge_release",
