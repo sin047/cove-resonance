@@ -97,9 +97,16 @@ export class NeteaseClient {
 
     const response = await fn({ ...params, cookie: this.cookie });
     const body = asRecord(response?.body ?? response);
-    const code = readNumber(body.code);
+    const innerBody = asRecord(body.body);
+    const code = readNumber(body.code)
+      ?? readNumber(innerBody.code)
+      ?? readNumber(response?.status);
     if (code !== 200) {
-      const message = readString(body.message) ?? readString(body.msg) ?? undefined;
+      const message = readString(body.message)
+        ?? readString(body.msg)
+        ?? readString(innerBody.message)
+        ?? readString(innerBody.msg)
+        ?? undefined;
       throw new NeteaseApiError(operation, code, message);
     }
     return body;
