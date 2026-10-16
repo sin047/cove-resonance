@@ -8,6 +8,7 @@ const sdk = require("NeteaseCloudMusicApi") as Record<string, unknown>;
 const ACCOUNT_OPERATIONS = [
   "search",
   "user_playlist",
+  "playlist_detail",
   "playlist_track_all",
   "playlist_create",
   "playlist_tracks",
