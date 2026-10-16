@@ -18,11 +18,49 @@ test("playlist_tracks accepts HTTP 200 when response body omits code", async () 
   }
 });
 
-test("playlist_tracks keeps API-level error code authoritative over HTTP status", async () => {
-  const original = sdk.playlist_tracks;
+test("playlist_tracks accepts an API error when the requested add postcondition is already true", async () => {
+  const originalTracks = sdk.playlist_tracks;
+  const originalDetail = sdk.playlist_detail;
   sdk.playlist_tracks = async () => ({
     status: 200,
-    body: { code: 502, message: "song already exists" },
+    body: { code: 502, message: "unexpected upstream result" },
+  });
+  sdk.playlist_detail = async () => ({
+    status: 200,
+    body: {
+      code: 200,
+      playlist: {
+        trackCount: 1,
+        trackIds: [{ id: 456 }],
+      },
+    },
+  });
+
+  try {
+    const client = new NeteaseClient("MUSIC_U=test");
+    await client.updatePlaylistTracks("123", ["456"], "add");
+  } finally {
+    sdk.playlist_tracks = originalTracks;
+    sdk.playlist_detail = originalDetail;
+  }
+});
+
+test("playlist_tracks keeps API-level error when the requested postcondition is false", async () => {
+  const originalTracks = sdk.playlist_tracks;
+  const originalDetail = sdk.playlist_detail;
+  sdk.playlist_tracks = async () => ({
+    status: 200,
+    body: { code: 502, message: "write failed" },
+  });
+  sdk.playlist_detail = async () => ({
+    status: 200,
+    body: {
+      code: 200,
+      playlist: {
+        trackCount: 1,
+        trackIds: [{ id: 999 }],
+      },
+    },
   });
 
   try {
@@ -32,6 +70,7 @@ test("playlist_tracks keeps API-level error code authoritative over HTTP status"
       (error: unknown) => error instanceof NeteaseApiError && error.code === 502,
     );
   } finally {
-    sdk.playlist_tracks = original;
+    sdk.playlist_tracks = originalTracks;
+    sdk.playlist_detail = originalDetail;
   }
 });
