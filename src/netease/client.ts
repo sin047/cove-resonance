@@ -112,6 +112,23 @@ export class NeteaseClient {
     return body;
   }
 
+  private async getPlaylistTrackIdSet(playlistId: string): Promise<Set<string>> {
+    const detail = await this.call("playlist_detail", { id: playlistId, s: 0 });
+    const playlist = asRecord(detail.playlist);
+    const rawTrackIds = Array.isArray(playlist.trackIds) ? playlist.trackIds : [];
+    const ids = rawTrackIds
+      .map((value) => readString(asRecord(value).id) ?? readString(value))
+      .filter((value): value is string => Boolean(value));
+
+    if (ids.length > 0 || (readNumber(playlist.trackCount) ?? 0) === 0) {
+      return new Set(ids);
+    }
+
+    const fallbackLimit = Math.max(50, Math.min(readNumber(playlist.trackCount) ?? 500, 1000));
+    const tracks = await this.getPlaylistTracks(playlistId, fallbackLimit);
+    return new Set(tracks.map((track) => track.id));
+  }
+
   async getAccountProfile(): Promise<AccountProfile> {
     const body = await this.call("user_account");
     const account = asRecord(body.account);
@@ -205,11 +222,21 @@ export class NeteaseClient {
     songIds: string[],
     operation: "add" | "del",
   ): Promise<void> {
-    await this.call("playlist_tracks", {
-      op: operation,
-      pid: playlistId,
-      tracks: songIds.join(","),
-    });
+    try {
+      await this.call("playlist_tracks", {
+        op: operation,
+        pid: playlistId,
+        tracks: songIds.join(","),
+      });
+      return;
+    } catch (error) {
+      const actualIds = await this.getPlaylistTrackIdSet(playlistId);
+      const applied = operation === "add"
+        ? songIds.every((id) => actualIds.has(id))
+        : songIds.every((id) => !actualIds.has(id));
+      if (applied) return;
+      throw error;
+    }
   }
 
   async likeSong(songId: string, like = true): Promise<void> {
@@ -258,7 +285,7 @@ export class NeteaseClient {
     return {
       inRoom,
       roomId: readString(roomInfo.roomId) ?? readString(data.roomId),
-      chatRoomId: readString(roomInfo.chatRoomId) ?? readString(data.chatRoomId),
+      chatRoomId: readString(roomInfo.chatRoomId) ?? null,
     };
   }
 
